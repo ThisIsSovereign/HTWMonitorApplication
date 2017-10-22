@@ -10,10 +10,13 @@
 #include <cppconn/resultset.h>
 #include <cppconn/statement.h>
 #include <cppconn/prepared_statement.h>
+#include <HTWMonitorDB.h>
 
 // General
 #include <iostream>
 #include <string>
+#include <sstream>
+#include <time.h>
 
 #define GATEWAY_ID   "T5YCDF"
 #define SENSOR_ID    "T5YK0X"
@@ -36,7 +39,32 @@
  *********************************************************************************/
 int AppCalls = 0;   //Keyboard Read Thread callback variable
 std::string currentUser = "NULL";
+std::string currentLocation = "NULL";
 
+
+// Get Current Date
+std::string getCurrentDate() 
+{
+    time_t     now = time(0);
+    struct tm  tstruct;
+    char       buf[80];
+    tstruct = *localtime(&now);
+    strftime(buf, sizeof(buf), "%Y-%m-%d", &tstruct);
+
+    return buf;
+}
+
+// Get Current Time
+std::string getCurrentTime() 
+{
+    time_t     now = time(0);
+    struct tm  tstruct;
+    char       buf[80];
+    tstruct = *localtime(&now);
+    strftime(buf, sizeof(buf), "%X", &tstruct);
+
+    return buf;
+}
 
 /**********************************************************************************
  *Tarts Events
@@ -49,15 +77,75 @@ void onGatewayMessageEvent(const char* id, int stringID)
 
 }
 
+
+// Handle Sensor Messages
 void onSensorMessageEvent(SensorMessage* msg)
 {
-  printf("TARTS-SEN[%s]: RSSI: %d dBm, Battery Voltage: %d.%02d VDC, Data: ", msg->ID, msg->RSSI, msg->BatteryVoltage/100, msg->BatteryVoltage%100);
-  for(int i=0; i< msg->DatumCount; i++)
-  {
-    if(i != 0) printf(" || ");
-    printf("%s | %s | %s", msg->DatumList[i].Name, msg->DatumList[i].Value, msg->DatumList[i].FormattedValue);
-  }
-  printf("\n");
+	std::string messageName = msg->DatumList[0].Name;
+	
+	TartsSensorBase* sensor = Tarts.FindSensor(SENSOR_ID);
+    sensor->setReportInterval(10);
+	
+	// MYSQL
+	sql::mysql::MySQL_Driver *driver;
+	sql::Connection *con;
+	sql::PreparedStatement *prep_stmt;
+	
+	driver = sql::mysql::get_mysql_driver_instance();
+	con = driver->connect(DB_HOST, DB_USER, DB_PASSWORD);
+	con->setSchema(DB_NAME);
+	
+	// Sensor Status
+	printf("TARTS-SEN[%s]: RSSI: %d dBm, Battery Voltage: %d.%02d VDC, Data: ", msg->ID, msg->RSSI, msg->BatteryVoltage/100, msg->BatteryVoltage%100);
+	for(int i=0; i< msg->DatumCount; i++)
+		{
+			if(i != 0) printf(" || ");
+			printf("%s | %s | %s", msg->DatumList[i].Name, msg->DatumList[i].Value, msg->DatumList[i].FormattedValue);
+		}
+	
+	// Insert Data into Database
+	
+	// Temperature Sensor Data
+	if (messageName == "TEMPERATURE")
+	{
+		std::stringstream converter;
+		std::string tempCelsiusString = msg->DatumList[0].Value;
+		double tempCelsius;
+		double tempCelsiusConverted;
+		double tempFahrenheit;
+		
+		// Convert Celsius to Fahrenheit
+		converter << tempCelsiusString;
+		converter >> tempCelsius;
+		tempCelsiusConverted = (tempCelsius/10.0);
+		tempFahrenheit = ((tempCelsiusConverted * 1.8000) + 32);
+		
+		// Check if Data is in a valid range
+		if (tempFahrenheit < 150.0 && tempFahrenheit > -25.0)
+		{
+			// Insert Data into Temperature Table
+			prep_stmt = con->prepareStatement("INSERT INTO Temperature(UserName, LocationName, Temperature, Date, Time) Values (?, ?, ?, ?, ?)");
+			prep_stmt->setString(1, currentUser);
+			prep_stmt->setString(2, currentLocation);
+			prep_stmt->setDouble(3, tempFahrenheit);
+			prep_stmt->setString(4, getCurrentDate());
+			prep_stmt->setString(5, getCurrentTime());
+			prep_stmt->execute();
+			
+			// Report Current Data Entry
+			std::cout << std::endl <<  "Temperature: " << tempFahrenheit << "F Location: " << currentLocation << " Date: " << getCurrentDate() << " Time: " << getCurrentTime() << std::endl;
+			
+			delete prep_stmt;
+			delete con;
+		}
+		
+	}
+	
+	// Relative Humidity Sensor Data
+	
+	// Water Detection Sensor Data
+	
+	printf("\n");
 }
 
 /**********************************************************************************
@@ -110,7 +198,7 @@ int setup()
     return 3;
   }
 
-  printf("--Press q to exit HTW Monitor.--\n\n");
+  printf("<<Press q to exit HTW Monitor.>>\n\n");
   return 0;
 }
 
@@ -146,8 +234,8 @@ void createAccount()
 	sql::ResultSet *res;
 	
 	driver = sql::mysql::get_mysql_driver_instance();
-	con = driver->connect("tcp://sovereigndb.chnv0tgw3tgj.us-east-2.rds.amazonaws.com", "thisissovereign", "bassdubstep9999");
-	con->setSchema("htwmonitor");
+	con = driver->connect(DB_HOST, DB_USER, DB_PASSWORD);
+	con->setSchema(DB_NAME);
 	
 	std::cout << "<<Account Creation>>\n";
 	
@@ -273,8 +361,8 @@ void login()
 	sql::ResultSet *res;
 	
 	driver = sql::mysql::get_mysql_driver_instance();
-	con = driver->connect("tcp://sovereigndb.chnv0tgw3tgj.us-east-2.rds.amazonaws.com", "thisissovereign", "bassdubstep9999");
-	con->setSchema("htwmonitor");
+	con = driver->connect(DB_HOST, DB_USER, DB_PASSWORD);
+	con->setSchema(DB_NAME);
 	
 	std::cout << "<<Login>>\n";
 	
@@ -299,12 +387,12 @@ void login()
 		if (res->rowsCount() == 1)
 		{
 			userNameExists = true;
-			std::cout << ("UserName Exists.\n\n");	
+			std::cout << ("User Name Exists.\n\n");	
 		}
 		else if (res->rowsCount() == 0)
 		{
 			inputUserName = "No";
-			std::cout << ("UserName does not exist!\n\n");
+			std::cout << ("User Name does not exist!\n\n");
 		}
 	}	
 	
@@ -353,6 +441,84 @@ void login()
 	delete con;
 }
 
+void selectLocation()
+{
+	int locationSelection = -1;
+	unsigned int input;
+	
+	// MySQL
+	sql::mysql::MySQL_Driver *driver;
+	sql::Connection *con;
+	sql::PreparedStatement *prep_stmt;
+	sql::ResultSet *res;
+	
+	driver = sql::mysql::get_mysql_driver_instance();
+	con = driver->connect(DB_HOST, DB_USER, DB_PASSWORD);
+	con->setSchema(DB_NAME);
+	
+	std::cout << "\n<<Select Location>>\n";
+
+	// Get and Display Current User's Locations
+	prep_stmt = con->prepareStatement("SELECT LocationName FROM Locations WHERE UserName=(?)");
+	prep_stmt->setString(1, currentUser);
+	res = prep_stmt->executeQuery();
+	
+	// Check if the User has any Locations saved first
+	if (res->rowsCount() > 0)
+	{
+		std::string userLocations[res->rowsCount()];
+		
+		int resIndex = 0;
+		
+		// Store LocationNames in local Array
+		while (res->next())
+		{
+			//std::cout << res->getString(1) << std::endl;
+			userLocations[resIndex] = res->getString(1);
+			resIndex++;
+		}
+		
+		// Get User's Location Selection
+		while (locationSelection < 0)
+		{
+			std::cout << ("Enter the number corresponding to the location you wish to select:\n");
+			for (unsigned int i = 0; i < res->rowsCount(); i++)
+			{
+				std::cout << i+1 << ": " << userLocations[i] << std::endl;
+			}
+			std::cin >> input;
+			
+			while(std::cin.fail()) 
+			{
+				std::cout << ("Enter the number corresponding to the location you wish to select:\n");
+				std::cin.clear();
+				std::cin.ignore(256, '\n');
+				std::cin >> input;
+			}
+			
+			if (input < 1 || input > res->rowsCount())
+			{
+				std::cout << ("You must enter the number corresponding to the location you wish to select:\n");
+			}
+			else 
+			{
+				locationSelection = (input-1);
+				currentLocation = userLocations[locationSelection];
+				std::cout << "Location selected: " << userLocations[locationSelection] << ".\n\n";
+			}	
+		}
+	}
+	else
+	{
+		std::cout << "You have no locations, create one first!\n\n";
+	}
+
+	delete res;
+	delete prep_stmt;
+	
+	delete con;
+}
+
 /**********************************************************************************
  * Execution entry point for this application
  *********************************************************************************/
@@ -361,10 +527,11 @@ int main(void)
 {
 	bool loggedIn = false;
 	int loginChoice= 0;
+	int locationChoice = 0;
 	int input;
 	
 	std::cout << ("Welcome to HTW Monitor.\n");
-	
+
 	// Log In
 	while (loggedIn == false)
 	{
@@ -403,8 +570,52 @@ int main(void)
 				loginChoice = 0;
 			}
 		}
-		
 
+	}
+	
+	// Select Location
+	while (currentLocation == "NULL")
+	{
+		while (locationChoice == 0)
+		{
+			std::cout << "You must select a location you made previously, or create a new one.\n";
+			std::cout << ("Enter:\n(1) Select Location\n(2) Create a new Location\n");
+			std::cin >> input;
+			
+				while(std::cin.fail()) 
+				{
+					std::cout << ("You must enter:\n(1) Select Location\n(2) Create a new Location\n");
+					std::cin.clear();
+					std::cin.ignore(256, '\n');
+					std::cin >> input;
+				}
+				
+				if (input != 1 && input != 2)
+				{
+					std::cout << ("You must enter:\n(1) Select Location\n(2) Create a new Location\n");
+				}
+				else 
+				{
+					locationChoice = input;
+				}	
+				
+				// Select Location or Create a new Location
+				if (locationChoice == 1)
+				{
+					selectLocation();
+					
+					// Handle when a user has no locations to select from
+					if (currentLocation == "NULL")
+					{
+						locationChoice = 0;
+					}
+				}
+				else if (locationChoice == 2)
+				{
+					
+					locationChoice = 0;
+				}
+		}
 	}
 	
 	if(setup() != 0) 
