@@ -33,13 +33,11 @@
   #define GATEWAY_PINRESET      P8_12      //<<your Reset Pin location>>
 #endif
 
-
-/**********************************************************************************
- *Global Variables
- *********************************************************************************/
+// Global Variables
 int AppCalls = 0;   //Keyboard Read Thread callback variable
 std::string currentUser = "NULL";
 std::string currentLocation = "NULL";
+int sensorUpdateFreq = 5;
 
 
 // Get Current Date
@@ -66,9 +64,7 @@ std::string getCurrentTime()
     return buf;
 }
 
-/**********************************************************************************
- *Tarts Events
- *********************************************************************************/
+// Tarts Events
 void onGatewayMessageEvent(const char* id, int stringID)
 {
   printf("TARTS-GWM[%s]-%d: %s\n", id, stringID, TartsGatewayStringTable[stringID]);
@@ -77,14 +73,13 @@ void onGatewayMessageEvent(const char* id, int stringID)
 
 }
 
-
 // Handle Sensor Messages
 void onSensorMessageEvent(SensorMessage* msg)
 {
 	std::string messageName = msg->DatumList[0].Name;
 	
 	TartsSensorBase* sensor = Tarts.FindSensor(SENSOR_ID);
-    sensor->setReportInterval(10);
+    sensor->setReportInterval(sensorUpdateFreq);
 	
 	// MYSQL
 	sql::mysql::MySQL_Driver *driver;
@@ -134,6 +129,7 @@ void onSensorMessageEvent(SensorMessage* msg)
 			
 			// Report Current Data Entry
 			std::cout << std::endl <<  "Temperature: " << tempFahrenheit << "F Location: " << currentLocation << " Date: " << getCurrentDate() << " Time: " << getCurrentTime() << std::endl;
+			std::cout << "Current Sensor Report Interval: " << sensor->getReportInterval() << "\n";
 			
 			delete prep_stmt;
 			delete con;
@@ -165,53 +161,56 @@ TARTS_THREAD(AppKeyboardReadThread)
 
 int setup() 
 {
-  printf("HTW Monitor running...");
+	printf("HTW Monitor running...");
 
-  //Prepare all the call-back functions
-  Tarts.RegisterEvent_GatewayMessage(onGatewayMessageEvent);
-  Tarts.RegisterEvent_SensorMessage(onSensorMessageEvent);
-  printf("All Event Handlers Registered.\n");
+	//Prepare all the call-back functions
+	Tarts.RegisterEvent_GatewayMessage(onGatewayMessageEvent);
+	Tarts.RegisterEvent_SensorMessage(onSensorMessageEvent);
+	printf("All Event Handlers Registered.\n");
 
-  //Register Gateway
-#ifdef BB_BLACK_ARCH
-  if(!Tarts.RegisterGateway(TartsGateway::Create(GATEWAY_ID, GATEWAY_CHANNELS, GATEWAY_UARTNUMBER, GATEWAY_PINACTIVITY, GATEWAY_PINPCTS, GATEWAY_PINPRTS, GATEWAY_PINRESET))){
-#else
-  if(!Tarts.RegisterGateway(TartsGateway::Create(GATEWAY_ID))){
-#endif
-    printf("TARTs Gateway Registration Failed!\n");
-    return 1;
-  }
+	//Register Gateway
+	#ifdef BB_BLACK_ARCH
+	if(!Tarts.RegisterGateway(TartsGateway::Create(GATEWAY_ID, GATEWAY_CHANNELS, GATEWAY_UARTNUMBER, GATEWAY_PINACTIVITY, GATEWAY_PINPCTS, GATEWAY_PINPRTS, GATEWAY_PINRESET))){
+	#else
+	if(!Tarts.RegisterGateway(TartsGateway::Create(GATEWAY_ID))){
+	#endif
+	printf("TARTs Gateway Registration Failed!\n");
+	return 1;
+	}
 
-  //Lastly Register All Sensors
-  if(!Tarts.RegisterSensor(GATEWAY_ID, TartsTemperature::Create(SENSOR_ID)))
-  {
-    Tarts.RemoveGateway(GATEWAY_ID);
-    printf("TARTs Temperature Sensor Registration Failed!\n");
-    return 2;
-  }
+	//Lastly Register All Sensors
+	if(!Tarts.RegisterSensor(GATEWAY_ID, TartsTemperature::Create(SENSOR_ID)))
+	{
+	Tarts.RemoveGateway(GATEWAY_ID);
+	printf("TARTs Temperature Sensor Registration Failed!\n");
+	return 2;
+	}
 
+	if(TARTS_THREADSTART(AppKeyboardReadThread) != 0)
+	{
+	printf("Unable to start Keyboard Read Thread!");
+	Tarts.RemoveGateway(GATEWAY_ID);
+	return 3;
+	}
 
-  if(TARTS_THREADSTART(AppKeyboardReadThread) != 0)
-  {
-    printf("Unable to start Keyboard Read Thread!");
-    Tarts.RemoveGateway(GATEWAY_ID);
-    return 3;
-  }
-
-  printf("<<Press q to exit HTW Monitor.>>\n\n");
-  return 0;
+	printf("<<Press q to exit HTW Monitor.>>\n\n");
+	return 0;
 }
 
 void loop() 
-{
-  Tarts.Process();
-  if(AppCalls == 1)
-  {
-    AppCalls = 0;
-    Tarts.RemoveGateway(GATEWAY_ID);
-    exit(0);
-  }
-}
+{   
+	Tarts.Process();
+	
+	TartsSensorBase* sensor = Tarts.FindSensor(SENSOR_ID);
+    sensor->setReportInterval(sensorUpdateFreq);
+	
+	if(AppCalls == 1)
+	{
+	AppCalls = 0;
+	Tarts.RemoveGateway(GATEWAY_ID);
+	exit(0);
+	}
+	}
 
 // Handles Account Creation
 void createAccount()
@@ -585,6 +584,119 @@ void selectLocation()
 	delete con;
 }
 
+// Get Sensor Update Frequency from User
+int inputSensorUpdateFreq()
+{
+	int inputSensorUpdateFreq = 0;
+	int input = 0;
+	
+	std::cout << "\nSensor Update Frequency must be between 10 seconds and 60 minutes.\n";
+	
+	while (inputSensorUpdateFreq == 0)
+	{
+		std::cout << ("Enter the new Sensor Update Frequency in seconds:\n");
+			std::cin >> input;
+			
+			while(std::cin.fail()) 
+			{
+				std::cout << "Sensor Update Frequency must be between 10 seconds and 60 minutes.\n";
+				std::cin.clear();
+				std::cin.ignore(256, '\n');
+				std::cin >> input;
+			}
+			
+			if (input < 10 || input > 3600)
+			{
+				std::cout << "Sensor Update Frequency must be between 10 seconds and 60 minutes.\n";
+			}
+			else 
+			{
+				inputSensorUpdateFreq = input;
+			}	
+	}
+	
+	return inputSensorUpdateFreq;
+}
+
+// Handles Init of Sensor Update Frequency ofr Current Session
+void initSensorUpdateFreq()
+{
+	int sensorUpdateFreqDB = 0;
+	int input = 0;
+	int updateChoice = 0;
+	
+	// MySQL
+	sql::mysql::MySQL_Driver *driver;
+	sql::Connection *con;
+	sql::PreparedStatement *prep_stmt;
+	sql::ResultSet *res;
+	
+	driver = sql::mysql::get_mysql_driver_instance();
+	con = driver->connect(DB_HOST, DB_USER, DB_PASSWORD);
+	con->setSchema(DB_NAME);
+	
+	std::cout << "\n<<Sensor Update Frequency>>\n";
+	
+	// Get and Display Current User's Sensor Update Frequency
+	prep_stmt = con->prepareStatement("SELECT UpdateFrequency FROM Users WHERE UserName=(?)");
+	prep_stmt->setString(1, currentUser);
+	res = prep_stmt->executeQuery();
+	
+	while (res->next())
+	{
+		std::cout << "Your saved Sensor Update Frequency is: " << res->getInt(1) << " seconds.\n";
+		sensorUpdateFreqDB = res->getInt(1);
+	}
+	
+	delete res;
+	delete prep_stmt;
+	
+	while (updateChoice == 0)
+	{
+		std::cout << ("Enter:\n(1) Use Saved\n(2) Set New\n");
+			std::cin >> input;
+			
+			while(std::cin.fail()) 
+			{
+				std::cout << ("You must enter:\n(1) Use Saved\n(2) Set New\n");
+				std::cin.clear();
+				std::cin.ignore(256, '\n');
+				std::cin >> input;
+			}
+			
+			if (input != 1 && input != 2)
+			{
+				std::cout << ("You must enter:\n(1) Use Saved\n(2) Set New\n");
+			}
+			else 
+			{
+				updateChoice = input;
+			}	
+			
+			// Used Saved or Set New
+			if (updateChoice == 1)
+			{
+				sensorUpdateFreq = sensorUpdateFreqDB;
+			}
+			else if (updateChoice == 2)
+			{
+				sensorUpdateFreq = inputSensorUpdateFreq();
+				
+				// Update Saved Sensor Update Frequency in DB
+				prep_stmt = con->prepareStatement("UPDATE Users SET UpdateFrequency=(?) WHERE UserName=(?)");
+				prep_stmt->setInt(1, sensorUpdateFreq);
+				prep_stmt->setString(2, currentUser);
+				prep_stmt->executeUpdate();
+				
+				delete prep_stmt;
+			}
+	}
+	
+	std::cout << "The Sensor Update Frequency is now: " << sensorUpdateFreq << " seconds.\n\n";
+	
+	delete con;
+}
+
 /**********************************************************************************
  * Execution entry point for this application
  *********************************************************************************/
@@ -592,6 +704,7 @@ void selectLocation()
 int main(void)
 {
 	bool loggedIn = false;
+	//bool sensorUpdateSet = false;
 	int loginChoice= 0;
 	int locationChoice = 0;
 	int input;
@@ -683,6 +796,12 @@ int main(void)
 					locationChoice = 0;
 				}
 		}
+	}
+	
+	// Set Sensor Update Frequency
+	while (sensorUpdateFreq < 10)
+	{
+		initSensorUpdateFreq();
 	}
 	
 	if(setup() != 0) 
