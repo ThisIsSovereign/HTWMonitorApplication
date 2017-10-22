@@ -213,7 +213,7 @@ void loop()
   }
 }
 
-// Handles Account Creation()
+// Handles Account Creation
 void createAccount()
 {
 	std::string inputUserName = "No";
@@ -441,6 +441,72 @@ void login()
 	delete con;
 }
 
+// Handles Location Creation
+void createLocation()
+{
+	std::string inputLocationName = "No";
+	bool locationExists = true;
+	
+	// MySQL
+	sql::mysql::MySQL_Driver *driver;
+	sql::Connection *con;
+	sql::PreparedStatement *prep_stmt;
+	sql::ResultSet *res;
+	
+	driver = sql::mysql::get_mysql_driver_instance();
+	con = driver->connect(DB_HOST, DB_USER, DB_PASSWORD);
+	con->setSchema(DB_NAME);
+	
+	std::cout << "\n<<Create Location>>\n";
+	
+	// Get LocationName
+	std::cout << "Location Names must be between 3 and 30 characters long, and are case sensitive.\n";
+	std::cout << "Enter a Location Name:\n";
+	std::cin >> inputLocationName;
+		
+	while (locationExists == true)
+	{
+		while (inputLocationName.size() > 30 || inputLocationName.size() < 3)
+		{
+			std::cout << "Enter a Location Name:\n";
+			std::cin.clear();
+			std::cin >> inputLocationName;
+		}
+		
+		// Check Locations Table for inputLocationName
+		prep_stmt = con->prepareStatement("SELECT LocationName FROM Locations WHERE UserName=(?) AND LocationName=(?)");
+		prep_stmt->setString(1, currentUser);
+		prep_stmt->setString(2, inputLocationName);
+		res = prep_stmt->executeQuery();
+		
+		if (res->rowsCount() == 1)
+		{
+			inputLocationName = "No";
+			std::cout << ("That Location already exists!\n\n");	
+		}
+		else if (res->rowsCount() == 0)
+		{
+			locationExists = false;
+			std::cout << ("That Location is avaliable!\n\n");
+		}
+	}	
+	
+	delete res;
+	delete prep_stmt;
+	
+	// Insert new Location into Locations Table
+	prep_stmt = con->prepareStatement("INSERT INTO Locations(UserName, LocationName) Values (?, ?)");
+	prep_stmt->setString(1, currentUser);
+	prep_stmt->setString(2, inputLocationName);
+	prep_stmt->execute();
+	
+	delete prep_stmt;
+	delete con;
+	
+	std::cout << inputLocationName << " successfully created!\n\n";
+}
+
+// Handles Location Selection
 void selectLocation()
 {
 	int locationSelection = -1;
@@ -612,6 +678,7 @@ int main(void)
 				}
 				else if (locationChoice == 2)
 				{
+					createLocation();
 					
 					locationChoice = 0;
 				}
