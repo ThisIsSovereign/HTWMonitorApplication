@@ -18,8 +18,12 @@
 #include <sstream>
 #include <time.h>
 
+
+// Tarts Hardware IDs
 #define GATEWAY_ID   "T5YCDF"
-#define SENSOR_ID    "T5YK0X"
+#define TEMPERATURE_ID    "T5YK0X"
+#define HUMIDITY_ID	 "T5YEP7"
+#define WATER_ID	 "T5YEAX"
 
 /**********************************************************************************
  *BEAGLEBONE BLACK PLATFORM-SPECIFIC DEFINITIONS
@@ -65,6 +69,8 @@ std::string getCurrentTime()
 }
 
 // Tarts Events
+
+// Handle Gateway Messages
 void onGatewayMessageEvent(const char* id, int stringID)
 {
   printf("TARTS-GWM[%s]-%d: %s\n", id, stringID, TartsGatewayStringTable[stringID]);
@@ -77,9 +83,20 @@ void onGatewayMessageEvent(const char* id, int stringID)
 void onSensorMessageEvent(SensorMessage* msg)
 {
 	std::string messageName = msg->DatumList[0].Name;
+	TartsSensorBase* sensor = Tarts.FindSensor(TEMPERATURE_ID);
 	
-	TartsSensorBase* sensor = Tarts.FindSensor(SENSOR_ID);
-    sensor->setReportInterval(sensorUpdateFreq);
+	//std::cout << messageName << std::endl;
+		
+	if (messageName == "TEMPERATURE")
+	{
+		sensor = Tarts.FindSensor(TEMPERATURE_ID);
+		sensor->setReportInterval(sensorUpdateFreq);
+	}
+	else if (messageName == "RH")
+	{
+		sensor = Tarts.FindSensor(HUMIDITY_ID);
+		sensor->setReportInterval(sensorUpdateFreq);
+	}
 	
 	// MYSQL
 	sql::mysql::MySQL_Driver *driver;
@@ -138,79 +155,42 @@ void onSensorMessageEvent(SensorMessage* msg)
 	}
 	
 	// Relative Humidity Sensor Data
+	if (messageName == "RH")
+	{
+		std::stringstream converter;
+		std::string humidityString = msg->DatumList[0].Value;
+		double humidity;
+	
+		converter << humidityString;
+		converter >> humidity;
+		humidity = (humidity/100.0);
+		
+		// Check if Data is in a valid range
+		if (humidity <= 100.0 && humidity >= 0.0)
+		{
+			// Insert Data into RelativeHumidity Table
+			prep_stmt = con->prepareStatement("INSERT INTO RelativeHumidity(UserName, LocationName, RelativeHumidity, Date, Time) Values (?, ?, ?, ?, ?)");
+			prep_stmt->setString(1, currentUser);
+			prep_stmt->setString(2, currentLocation);
+			prep_stmt->setDouble(3, humidity);
+			prep_stmt->setString(4, getCurrentDate());
+			prep_stmt->setString(5, getCurrentTime());
+			prep_stmt->execute();
+			
+			// Report Current Data Entry
+			std::cout << std::endl <<  "Relative Humidity: " << humidity << "% Location: " << currentLocation << " Date: " << getCurrentDate() << " Time: " << getCurrentTime() << std::endl;
+			std::cout << "Current Sensor Report Interval: " << sensor->getReportInterval() << "\n";
+			
+			delete prep_stmt;
+			delete con;
+		}
+		
+	}
 	
 	// Water Detection Sensor Data
 	
 	printf("\n");
 }
-
-/**********************************************************************************
- * Keyboard Thread and Arduino-like setup / loop code
- *********************************************************************************/
-TARTS_THREAD(AppKeyboardReadThread)
-{
-  char rxchar = 0;
-  while(1)
-  {
-      std::cin >> rxchar;
-      if(rxchar == 'q') AppCalls = 1;
-      rxchar = 0;
-  }
-  return 0; //Here to keep the function happy
-}
-
-int setup() 
-{
-	printf("HTW Monitor running...");
-
-	//Prepare all the call-back functions
-	Tarts.RegisterEvent_GatewayMessage(onGatewayMessageEvent);
-	Tarts.RegisterEvent_SensorMessage(onSensorMessageEvent);
-	printf("All Event Handlers Registered.\n");
-
-	//Register Gateway
-	#ifdef BB_BLACK_ARCH
-	if(!Tarts.RegisterGateway(TartsGateway::Create(GATEWAY_ID, GATEWAY_CHANNELS, GATEWAY_UARTNUMBER, GATEWAY_PINACTIVITY, GATEWAY_PINPCTS, GATEWAY_PINPRTS, GATEWAY_PINRESET))){
-	#else
-	if(!Tarts.RegisterGateway(TartsGateway::Create(GATEWAY_ID))){
-	#endif
-	printf("TARTs Gateway Registration Failed!\n");
-	return 1;
-	}
-
-	//Lastly Register All Sensors
-	if(!Tarts.RegisterSensor(GATEWAY_ID, TartsTemperature::Create(SENSOR_ID)))
-	{
-	Tarts.RemoveGateway(GATEWAY_ID);
-	printf("TARTs Temperature Sensor Registration Failed!\n");
-	return 2;
-	}
-
-	if(TARTS_THREADSTART(AppKeyboardReadThread) != 0)
-	{
-	printf("Unable to start Keyboard Read Thread!");
-	Tarts.RemoveGateway(GATEWAY_ID);
-	return 3;
-	}
-
-	printf("<<Press q to exit HTW Monitor.>>\n\n");
-	return 0;
-}
-
-void loop() 
-{   
-	Tarts.Process();
-	
-	TartsSensorBase* sensor = Tarts.FindSensor(SENSOR_ID);
-    sensor->setReportInterval(sensorUpdateFreq);
-	
-	if(AppCalls == 1)
-	{
-	AppCalls = 0;
-	Tarts.RemoveGateway(GATEWAY_ID);
-	exit(0);
-	}
-	}
 
 // Handles Account Creation
 void createAccount()
@@ -618,7 +598,7 @@ int inputSensorUpdateFreq()
 	return inputSensorUpdateFreq;
 }
 
-// Handles Init of Sensor Update Frequency ofr Current Session
+// Handles Init of Sensor Update Frequency of Current Session
 void initSensorUpdateFreq()
 {
 	int sensorUpdateFreqDB = 0;
@@ -695,6 +675,84 @@ void initSensorUpdateFreq()
 	std::cout << "The Sensor Update Frequency is now: " << sensorUpdateFreq << " seconds.\n\n";
 	
 	delete con;
+}
+
+// Keyboard Thread 
+TARTS_THREAD(AppKeyboardReadThread)
+{
+  char rxchar = 0;
+  while(1)
+  {
+      std::cin >> rxchar;
+      if(rxchar == 'q') AppCalls = 1;     
+      rxchar = 0;
+  }
+  return 0; //Here to keep the function happy
+}
+
+// Initial Setup
+int setup() 
+{
+	printf("HTW Monitor running...");
+
+	//Prepare all the call-back functions
+	Tarts.RegisterEvent_GatewayMessage(onGatewayMessageEvent);
+	Tarts.RegisterEvent_SensorMessage(onSensorMessageEvent);
+	printf("All Event Handlers Registered.\n");
+
+	//Register Gateway
+	#ifdef BB_BLACK_ARCH
+	if(!Tarts.RegisterGateway(TartsGateway::Create(GATEWAY_ID, GATEWAY_CHANNELS, GATEWAY_UARTNUMBER, GATEWAY_PINACTIVITY, GATEWAY_PINPCTS, GATEWAY_PINPRTS, GATEWAY_PINRESET))){
+	#else
+	if(!Tarts.RegisterGateway(TartsGateway::Create(GATEWAY_ID))){
+	#endif
+	printf("TARTs Gateway Registration Failed!\n");
+	return 1;
+	}
+
+	//Lastly Register All Sensors
+	if(!Tarts.RegisterSensor(GATEWAY_ID, TartsTemperature::Create(TEMPERATURE_ID)))
+	{
+		Tarts.RemoveGateway(GATEWAY_ID);
+		printf("TARTs Temperature Sensor Registration Failed!\n");
+		return 2;
+	}
+	
+	if(!Tarts.RegisterSensor(GATEWAY_ID, TartsHumidity::Create(HUMIDITY_ID)))
+	{
+		Tarts.RemoveGateway(GATEWAY_ID);
+		printf("TARTs Humidity Sensor Registration Failed!\n");
+		return 3;
+	}
+
+	if(TARTS_THREADSTART(AppKeyboardReadThread) != 0)
+	{
+		printf("Unable to start Keyboard Read Thread!");
+		Tarts.RemoveGateway(GATEWAY_ID);
+		return 4;
+	}
+
+	printf("<<Press q to exit HTW Monitor.>>\n\n");
+	return 0;
+}
+
+void loop() 
+{   
+	Tarts.Process();
+	
+	// Apply Sensor Update Frequency
+	TartsSensorBase* temperatureSensor = Tarts.FindSensor(TEMPERATURE_ID);
+    temperatureSensor->setReportInterval(sensorUpdateFreq);
+    
+    TartsSensorBase* humiditySensor = Tarts.FindSensor(HUMIDITY_ID);
+    humiditySensor->setReportInterval(sensorUpdateFreq);
+	
+	if(AppCalls == 1)
+	{
+		AppCalls = 0;
+		Tarts.RemoveGateway(GATEWAY_ID);
+		exit(0);
+	}
 }
 
 /**********************************************************************************
