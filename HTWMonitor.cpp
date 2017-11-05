@@ -18,16 +18,12 @@
 #include <sstream>
 #include <time.h>
 
-
 // Tarts Hardware IDs
 #define GATEWAY_ID   "T5YCDF"
 #define TEMPERATURE_ID    "T5YK0X"
 #define HUMIDITY_ID	 "T5YEP7"
 #define WATER_ID	 "T5YEAX"
 
-/**********************************************************************************
- *BEAGLEBONE BLACK PLATFORM-SPECIFIC DEFINITIONS
- *********************************************************************************/
 #ifdef BB_BLACK_ARCH
   #define GATEWAY_CHANNELS      0xFFFFFFFF // All Channels
   #define GATEWAY_UARTNUMBER    1          //<<your UART Selection>>
@@ -118,36 +114,53 @@ void onSensorMessageEvent(SensorMessage* msg)
 	std::string messageName = msg->DatumList[0].Name;
 	TartsSensorBase* sensor = Tarts.FindSensor(TEMPERATURE_ID);
 	
-	std::cout << messageName << std::endl;
+	//std::cout << messageName << std::endl;
+	//std::cout << "Retry Count: " <<  sensor->getRetryCount() << std::endl;
+	//std::cout << "Recovery: " <<  sensor->getRecovery() << std::endl;
 		
-	// Apply Sensor Update Frequency	
+	// Set Sensor Variable to Current Sensor
 	if (messageName == "TEMPERATURE")
 	{
 		sensor = Tarts.FindSensor(TEMPERATURE_ID);
-		sensor->setReportInterval(sensorUpdateFreq);
+		//if (sensor->getReportInterval() != sensorUpdateFreq)
+		//{
+			//sensor->setReportInterval(sensorUpdateFreq);
+		//}
 	}
 	else if (messageName == "RH")
 	{
 		sensor = Tarts.FindSensor(HUMIDITY_ID);
-		sensor->setReportInterval(sensorUpdateFreq);
+		//if (sensor->getReportInterval() != sensorUpdateFreq)
+		//{
+			//sensor->setReportInterval(sensorUpdateFreq);
+		//}
 	}
+	else if (messageName == "DETECT")
+	{
+		sensor = Tarts.FindSensor(WATER_ID);
+	}
+	
+	// Set RetryCount and Recovery to 0 so sensors never stop attempting to reconnect to baseplate
+	sensor->setRetryCount(0);
+	sensor->setRecovery(0);
 	
 	// MYSQL
 	sql::mysql::MySQL_Driver *driver;
 	sql::Connection *con;
 	sql::PreparedStatement *prep_stmt;
+	sql::ResultSet *res;
 	
 	driver = sql::mysql::get_mysql_driver_instance();
 	con = driver->connect(DB_HOST, DB_USER, DB_PASSWORD);
 	con->setSchema(DB_NAME);
 	
-	// Sensor Status
-	printf("TARTS-SEN[%s]: RSSI: %d dBm, Battery Voltage: %d.%02d VDC, Data: ", msg->ID, msg->RSSI, msg->BatteryVoltage/100, msg->BatteryVoltage%100);
-	for(int i=0; i< msg->DatumCount; i++)
-		{
-			if(i != 0) printf(" || ");
-			printf("%s | %s | %s", msg->DatumList[i].Name, msg->DatumList[i].Value, msg->DatumList[i].FormattedValue);
-		}
+	// Sensor Debug Data
+	//printf("TARTS-SEN[%s]: RSSI: %d dBm, Battery Voltage: %d.%02d VDC, Data: ", msg->ID, msg->RSSI, msg->BatteryVoltage/100, msg->BatteryVoltage%100);
+	//for(int i=0; i< msg->DatumCount; i++)
+	//{
+		//if(i != 0) printf(" || ");
+		//printf("%s | %s | %s", msg->DatumList[i].Name, msg->DatumList[i].Value, msg->DatumList[i].FormattedValue);
+	//}
 	
 	// Insert Data into Database
 	
@@ -180,7 +193,7 @@ void onSensorMessageEvent(SensorMessage* msg)
 			
 			// Report Current Data Entry
 			std::cout << std::endl <<  "Temperature: " << tempFahrenheit << "F Location: " << currentLocation << " Date: " << getCurrentDate() << " Time: " << getCurrentTime() << std::endl;
-			std::cout << "Current Sensor Report Interval: " << sensor->getReportInterval() << "\n";
+			std::cout << "Current Sensor Report Interval: " << sensor->getReportInterval() << " seconds.\n";
 			
 			delete prep_stmt;
 			delete con;
@@ -213,7 +226,7 @@ void onSensorMessageEvent(SensorMessage* msg)
 			
 			// Report Current Data Entry
 			std::cout << std::endl <<  "Relative Humidity: " << humidity << "% Location: " << currentLocation << " Date: " << getCurrentDate() << " Time: " << getCurrentTime() << std::endl;
-			std::cout << "Current Sensor Report Interval: " << sensor->getReportInterval() << "\n";
+			std::cout << "Current Sensor Report Interval: " << sensor->getReportInterval() << " seconds.\n";
 			
 			delete prep_stmt;
 			delete con;
@@ -222,12 +235,83 @@ void onSensorMessageEvent(SensorMessage* msg)
 	}
 	
 	// Water Detection Sensor Data
-	
+	if (messageName == "DETECT")
+	{
+		std::stringstream converter;
+		std::string detectString = msg->DatumList[0].Value;
+		int detectStatus;
+		
+		converter << detectString;
+		converter >> detectStatus;
+		
+		// Check if Data is in a valid range
+		if (detectStatus == 0 || detectStatus == 1)
+		{
+			// Check WaterDetection Table for previous entry for current user and location
+			prep_stmt = con->prepareStatement("SELECT UserName FROM WaterDetection WHERE UserName=(?) AND LocationName=(?)");
+			prep_stmt->setString(1, currentUser);
+			prep_stmt->setString(2, currentLocation);
+			res = prep_stmt->executeQuery();
+			
+			// Update Entry
+			if (res->rowsCount() == 1)
+			{
+				// Update WaterDetection Table
+				prep_stmt = con->prepareStatement("UPDATE WaterDetection SET Status=(?) WHERE UserName=(?) AND LocationName=(?)");
+				prep_stmt->setInt(1, detectStatus);
+				prep_stmt->setString(2, currentUser);
+				prep_stmt->setString(3, currentLocation);
+				prep_stmt->executeUpdate();
+				
+				prep_stmt = con->prepareStatement("UPDATE WaterDetection SET Date=(?) WHERE UserName=(?) AND LocationName=(?)");
+				prep_stmt->setString(1, getCurrentDate());
+				prep_stmt->setString(2, currentUser);
+				prep_stmt->setString(3, currentLocation);
+				prep_stmt->executeUpdate();
+				
+				prep_stmt = con->prepareStatement("UPDATE WaterDetection SET Time=(?) WHERE UserName=(?) AND LocationName=(?)");
+				prep_stmt->setString(1, getCurrentTime());
+				prep_stmt->setString(2, currentUser);
+				prep_stmt->setString(3, currentLocation);
+				prep_stmt->executeUpdate();
+
+				delete prep_stmt;
+				delete con;
+			}
+			// Add new Entry
+			else if (res->rowsCount() == 0)
+			{
+				// Insert into WaterDetection Table
+				prep_stmt = con->prepareStatement("INSERT INTO WaterDetection(UserName, LocationName, Status, Date, Time) Values (?, ?, ?, ?, ?)");
+				prep_stmt->setString(1, currentUser);
+				prep_stmt->setString(2, currentLocation);
+				prep_stmt->setInt(3, detectStatus);
+				prep_stmt->setString(4, getCurrentDate());
+				prep_stmt->setString(5, getCurrentTime());
+				prep_stmt->execute();
+				
+				delete prep_stmt;
+				delete con;
+			}	
+			
+			// Report Current Data Entry
+			std::cout << std::endl <<  "Water Detection: " << msg->DatumList[0].FormattedValue << " Location: " << currentLocation << " Date: " << getCurrentDate() << " Time: " << getCurrentTime() << std::endl;
+			//std::cout << "Current Sensor Report Interval: " << sensor->getReportInterval() << " seconds.\n";
+		}
+		
+	}
 	
 	// Check for new Sensor Update Frequency
 	pullSensorUpdateFreq();
 	
-	printf("\n");
+	// Update Current Sensor's Update Frequency
+	if (sensor->getReportInterval() != sensorUpdateFreq)
+	{
+		sensor->setReportInterval(sensorUpdateFreq);
+	}
+	
+	// Uncomment for debug messages
+	//printf("\n");
 }
 
 // Handles Account Creation
@@ -766,12 +850,19 @@ int setup()
 		printf("TARTs Humidity Sensor Registration Failed!\n");
 		return 3;
 	}
+	
+	if(!Tarts.RegisterSensor(GATEWAY_ID, TartsWaterDetect::Create(WATER_ID)))
+	{
+		Tarts.RemoveGateway(GATEWAY_ID);
+		printf("TARTs Water Detection Sensor Registration Failed!\n");
+		return 4;
+	}
 
 	if(TARTS_THREADSTART(AppKeyboardReadThread) != 0)
 	{
 		printf("Unable to start Keyboard Read Thread!");
 		Tarts.RemoveGateway(GATEWAY_ID);
-		return 4;
+		return 5;
 	}
 
 	printf("<<Press q to exit HTW Monitor.>>\n\n");
@@ -782,12 +873,12 @@ void loop()
 {   
 	Tarts.Process();
 	
-	//// Apply Sensor Update Frequency
-	//TartsSensorBase* temperatureSensor = Tarts.FindSensor(TEMPERATURE_ID);
-    //temperatureSensor->setReportInterval(sensorUpdateFreq);
+	// Apply Sensor Update Frequency
+	TartsSensorBase* temperatureSensor = Tarts.FindSensor(TEMPERATURE_ID);
+    temperatureSensor->setReportInterval(sensorUpdateFreq);
     
-    //TartsSensorBase* humiditySensor = Tarts.FindSensor(HUMIDITY_ID);
-    //humiditySensor->setReportInterval(sensorUpdateFreq);
+    TartsSensorBase* humiditySensor = Tarts.FindSensor(HUMIDITY_ID);
+    humiditySensor->setReportInterval(sensorUpdateFreq);
 	
 	if(AppCalls == 1)
 	{
