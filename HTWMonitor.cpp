@@ -43,7 +43,6 @@ std::string currentUser = "NULL";
 std::string currentLocation = "NULL";
 int sensorUpdateFreq = 5;
 
-
 // Get Current Date
 std::string getCurrentDate() 
 {
@@ -68,6 +67,40 @@ std::string getCurrentTime()
     return buf;
 }
 
+// Pull Sensor Update Frequency from Database
+void pullSensorUpdateFreq()
+{
+	int sensorUpdateFreqDB = 0;
+	
+	// MySQL
+	sql::mysql::MySQL_Driver *driver;
+	sql::Connection *con;
+	sql::PreparedStatement *prep_stmt;
+	sql::ResultSet *res;
+	
+	driver = sql::mysql::get_mysql_driver_instance();
+	con = driver->connect(DB_HOST, DB_USER, DB_PASSWORD);
+	con->setSchema(DB_NAME);
+		
+	prep_stmt = con->prepareStatement("SELECT UpdateFrequency FROM Users WHERE UserName=(?)");
+	prep_stmt->setString(1, currentUser);
+	res = prep_stmt->executeQuery();
+	
+	while (res->next())
+	{
+		sensorUpdateFreqDB = res->getInt(1);
+	}
+	
+	delete res;
+	delete prep_stmt;
+	delete con;
+	
+	if (sensorUpdateFreq != sensorUpdateFreqDB)
+	{
+		sensorUpdateFreq = sensorUpdateFreqDB;
+	}
+}
+
 // Tarts Events
 
 // Handle Gateway Messages
@@ -85,8 +118,9 @@ void onSensorMessageEvent(SensorMessage* msg)
 	std::string messageName = msg->DatumList[0].Name;
 	TartsSensorBase* sensor = Tarts.FindSensor(TEMPERATURE_ID);
 	
-	//std::cout << messageName << std::endl;
+	std::cout << messageName << std::endl;
 		
+	// Apply Sensor Update Frequency	
 	if (messageName == "TEMPERATURE")
 	{
 		sensor = Tarts.FindSensor(TEMPERATURE_ID);
@@ -188,6 +222,10 @@ void onSensorMessageEvent(SensorMessage* msg)
 	}
 	
 	// Water Detection Sensor Data
+	
+	
+	// Check for new Sensor Update Frequency
+	pullSensorUpdateFreq();
 	
 	printf("\n");
 }
@@ -680,14 +718,17 @@ void initSensorUpdateFreq()
 // Keyboard Thread 
 TARTS_THREAD(AppKeyboardReadThread)
 {
-  char rxchar = 0;
-  while(1)
-  {
-      std::cin >> rxchar;
-      if(rxchar == 'q') AppCalls = 1;     
-      rxchar = 0;
-  }
-  return 0; //Here to keep the function happy
+	char rxchar = 0;
+	while(1)
+	{
+		std::cin >> rxchar;
+		if (rxchar == 'q') 
+		{
+			AppCalls = 1;     
+			rxchar = 0;
+		}	
+	}
+	return 0;
 }
 
 // Initial Setup
@@ -704,7 +745,8 @@ int setup()
 	#ifdef BB_BLACK_ARCH
 	if(!Tarts.RegisterGateway(TartsGateway::Create(GATEWAY_ID, GATEWAY_CHANNELS, GATEWAY_UARTNUMBER, GATEWAY_PINACTIVITY, GATEWAY_PINPCTS, GATEWAY_PINPRTS, GATEWAY_PINRESET))){
 	#else
-	if(!Tarts.RegisterGateway(TartsGateway::Create(GATEWAY_ID))){
+	if(!Tarts.RegisterGateway(TartsGateway::Create(GATEWAY_ID)))
+	{
 	#endif
 	printf("TARTs Gateway Registration Failed!\n");
 	return 1;
@@ -740,12 +782,12 @@ void loop()
 {   
 	Tarts.Process();
 	
-	// Apply Sensor Update Frequency
-	TartsSensorBase* temperatureSensor = Tarts.FindSensor(TEMPERATURE_ID);
-    temperatureSensor->setReportInterval(sensorUpdateFreq);
+	//// Apply Sensor Update Frequency
+	//TartsSensorBase* temperatureSensor = Tarts.FindSensor(TEMPERATURE_ID);
+    //temperatureSensor->setReportInterval(sensorUpdateFreq);
     
-    TartsSensorBase* humiditySensor = Tarts.FindSensor(HUMIDITY_ID);
-    humiditySensor->setReportInterval(sensorUpdateFreq);
+    //TartsSensorBase* humiditySensor = Tarts.FindSensor(HUMIDITY_ID);
+    //humiditySensor->setReportInterval(sensorUpdateFreq);
 	
 	if(AppCalls == 1)
 	{
@@ -755,9 +797,6 @@ void loop()
 	}
 }
 
-/**********************************************************************************
- * Execution entry point for this application
- *********************************************************************************/
 //Main Application Loop
 int main(void)
 {
